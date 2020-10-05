@@ -99,7 +99,7 @@ public class BuildArtifactMapperImpl {
 //    private static final Map<URL, File> source2Target = new HashMap<URL, File>();
     private static final Map<URL, Set<ArtifactsUpdated>> source2Listener = new HashMap<URL, Set<ArtifactsUpdated>>();
 
-    private static final long MINIMAL_TIMESTAMP = 2000L;
+    private static final boolean COMPARE_TIMESTAMPS = Boolean.getBoolean(BuildArtifactMapperImpl.class.getName() + ".COMPARE_TIMESTAMPS"); //NOI18N
 
     public static synchronized void addArtifactsUpdatedListener(URL sourceRoot, ArtifactsUpdated listener) {
         Set<ArtifactsUpdated> listeners = source2Listener.get(sourceRoot);
@@ -255,7 +255,6 @@ public class BuildArtifactMapperImpl {
             out = new FileOutputStream(target);
 
             FileUtil.copy(ins, out);
-            //target.setLastModified(MINIMAL_TIMESTAMP); see 156153
             return true;
         } catch (FileNotFoundException fnf) {
             LOG.log(Level.INFO, "Cannot open file.", fnf);   //NOI18N
@@ -898,6 +897,10 @@ public class BuildArtifactMapperImpl {
     }
 
     private static boolean targetNewerThanSourceFile(File target, URL approximateSource) {
+        if (!COMPARE_TIMESTAMPS) {
+            LOG.finest("#227791: timestamp comparison disabled");
+            return false;
+        }
         if (!"file".equals(approximateSource.getProtocol())) {
             LOG.log(Level.FINER, "#227791: ignoring non-file-based source {0}", approximateSource);
             return false;
@@ -928,7 +931,7 @@ public class BuildArtifactMapperImpl {
             return false;
         }
     }
-    
+
     @ServiceProvider(service = CompileOnSaveAction.Provider.class, position = Integer.MAX_VALUE)
     public static final class Provider implements CompileOnSaveAction.Provider {
         //@GuardedBy("normCache")
