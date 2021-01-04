@@ -94,6 +94,7 @@ public class TokenFormatter {
         public boolean spaceBeforeFinallyLeftBrace;
         public boolean spaceBeforeUseTraitBodyLeftBrace;
         public boolean spaceBeforeAnonymousClassParen;
+        public boolean spaceBeforeAnonymousFunctionParen;
         public boolean spaceBeforeMethodDeclParen;
         public boolean spaceBeforeMethodCallParen;
         public boolean spaceBeforeIfParen;
@@ -161,6 +162,7 @@ public class TokenFormatter {
         public int blankLinesAfterOpenPHPTag;
         public int blankLinesAfterOpenPHPTagInHTML;
         public int blankLinesBeforeClosePHPTag;
+        public int blankLinesMaxPreserved;
         public CodeStyle.WrapStyle wrapGroupUseList;
         public CodeStyle.WrapStyle wrapExtendsImplementsKeyword;
         public CodeStyle.WrapStyle wrapExtendsImplementsList;
@@ -239,6 +241,7 @@ public class TokenFormatter {
             spaceBeforeUseTraitBodyLeftBrace = codeStyle.spaceBeforeUseTraitBodyLeftBrace();
 
             spaceBeforeAnonymousClassParen = codeStyle.spaceBeforeAnonymousClassParen();
+            spaceBeforeAnonymousFunctionParen = codeStyle.spaceBeforeAnonymousFunctionParen();
             spaceBeforeMethodDeclParen = codeStyle.spaceBeforeMethodDeclParen();
             spaceBeforeMethodCallParen = codeStyle.spaceBeforeMethodCallParen();
             spaceBeforeIfParen = codeStyle.spaceBeforeIfParen();
@@ -312,6 +315,7 @@ public class TokenFormatter {
             blankLinesAfterOpenPHPTag = codeStyle.getBlankLinesAfterOpenPHPTag();
             blankLinesAfterOpenPHPTagInHTML = codeStyle.getBlankLinesAfterOpenPHPTagInHTML();
             blankLinesBeforeClosePHPTag = codeStyle.getBlankLinesBeforeClosePHPTag();
+            blankLinesMaxPreserved = codeStyle.getBlankLinesMaxPreserved();
 
             wrapGroupUseList = codeStyle.wrapGroupUseList();
             wrapExtendsImplementsKeyword = codeStyle.wrapExtendsImplementsKeyword();
@@ -1199,6 +1203,9 @@ public class TokenFormatter {
                                     case WHITESPACE_BEFORE_ANONYMOUS_CLASS_PAREN:
                                         countSpaces = docOptions.spaceBeforeAnonymousClassParen ? 1 : 0;
                                         break;
+                                    case WHITESPACE_BEFORE_ANONYMOUS_FUNCTION_PAREN:
+                                        countSpaces = docOptions.spaceBeforeAnonymousFunctionParen ? 1 : 0;
+                                        break;
                                     case WHITESPACE_BEFORE_METHOD_DEC_PAREN:
                                         countSpaces = docOptions.spaceBeforeMethodDeclParen ? 1 : 0;
                                         break;
@@ -1718,6 +1725,9 @@ public class TokenFormatter {
                                     case WHITESPACE_AFTER_MULTI_CATCH_SEPARATOR:
                                         countSpaces = 1;
                                         break;
+                                    case WHITESPACE_AFTER_TYPE:
+                                        countSpaces = 1;
+                                        break;
                                     default:
                                     //no-op
                                 }
@@ -1826,6 +1836,7 @@ public class TokenFormatter {
                                     } else {
                                         if (!indentRule) {
                                             newLines = countOfNewLines(oldText);
+                                            newLines = docOptions.blankLinesMaxPreserved + 1 < newLines ? docOptions.blankLinesMaxPreserved + 1 : newLines;
                                         }
                                     }
                                 }

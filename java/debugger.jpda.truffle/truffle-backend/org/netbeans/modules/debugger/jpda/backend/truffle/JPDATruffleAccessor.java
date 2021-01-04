@@ -39,6 +39,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.WeakHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.graalvm.polyglot.Engine;
 
 /**
@@ -230,7 +231,7 @@ public class JPDATruffleAccessor extends Object {
                 System.err.println("frameInfos = "+frameInfos);
                 *//*
             }*/
-            SourcePosition position = new SourcePosition(sf.getSourceSection());
+            SourcePosition position = new SourcePosition(sf.getSourceSection(), sf.getLanguage());
             frameInfos.append(createPositionIdentificationString(position));
             if (includeInternal) {
                 frameInfos.append('\n');
@@ -259,6 +260,8 @@ public class JPDATruffleAccessor extends Object {
         str.append(position.path);
         str.append('\n');
         str.append(position.uri.toString());
+        str.append('\n');
+        str.append(position.mimeType);
         str.append('\n');
         str.append(position.sourceSection);
         return str.toString();
@@ -517,13 +520,19 @@ public class JPDATruffleAccessor extends Object {
         if (ignoreCount != 0) {
             bb.ignoreCount(ignoreCount);
         }
+        AtomicBoolean canNotifyResolved = new AtomicBoolean(false);
         if (oneShot) {
             bb.oneShot();
         } else {
             bb.resolveListener(new Breakpoint.ResolveListener() {
                 @Override
                 public void breakpointResolved(Breakpoint breakpoint, SourceSection section) {
-                    breakpointResolvedAccess(breakpoint, section.getStartLine(), section.getStartColumn());
+                    // Notify breakpoint resolution after we actually install it.
+                    // Resolution that is performed synchronously with the breakpoint installation
+                    // would block doSetLineBreakpoint() method invocation on breakpointResolvedAccess breakpoint
+                    if (canNotifyResolved.get()) {
+                        breakpointResolvedAccess(breakpoint, section.getStartLine(), section.getStartColumn());
+                    }
                 }
             });
         }
@@ -532,7 +541,10 @@ public class JPDATruffleAccessor extends Object {
             lb.setCondition(condition);
         }
         trace("JPDATruffleAccessor.setLineBreakpoint({0}, {1}, {2}): lb = {3}", debuggerSession, uri, line, lb);
-        return debuggerSession.install(lb);
+        Breakpoint breakpoint =  debuggerSession.install(lb);
+        // We might return a resolved breakpoint already, or notify breakpointResolvedAccess later on
+        canNotifyResolved.set(true);
+        return breakpoint;
     }
     
     static void removeBreakpoint(Object br) {

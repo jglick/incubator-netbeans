@@ -108,11 +108,13 @@ public final class FmtOptions {
     public static final String BLANK_LINES_AFTER_OPEN_PHP_TAG = "blankLinesAfterOpenPHPTag"; //NOI18N
     public static final String BLANK_LINES_AFTER_OPEN_PHP_TAG_IN_HTML = "blankLinesAfterOpenPHPTagInHTML"; //NOI18N
     public static final String BLANK_LINES_BEFORE_CLOSE_PHP_TAG = "blankLinesBeforeClosePHPTag"; //NOI18N
+    public static final String BLANK_LINES_MAX_PRESERVED = "blankLinesMaxPreserved"; //NOI18N
     public static final String SPACE_BEFORE_WHILE = "spaceBeforeWhile"; //NOI18N
     public static final String SPACE_BEFORE_ELSE = "spaceBeforeElse"; //NOI18N
     public static final String SPACE_BEFORE_CATCH = "spaceBeforeCatch"; //NOI18N
     public static final String SPACE_BEFORE_FINALLY = "spaceBeforeFinally"; //NOI18N
     public static final String SPACE_BEFORE_ANONYMOUS_CLASS_PAREN = "spaceBeforeAnonymousClassParen"; //NOI18N
+    public static final String SPACE_BEFORE_ANONYMOUS_FUNCTION_PAREN = "spaceBeforeAnonymousFunctionParen"; //NOI18N
     public static final String SPACE_BEFORE_METHOD_DECL_PAREN = "spaceBeforeMethodDeclParen"; //NOI18N
     public static final String SPACE_BEFORE_METHOD_CALL_PAREN = "spaceBeforeMethodCallParen"; //NOI18N
     public static final String SPACE_BEFORE_IF_PAREN = "spaceBeforeIfParen"; //NOI18N
@@ -284,12 +286,14 @@ public final class FmtOptions {
             {BLANK_LINES_AFTER_OPEN_PHP_TAG, "1"}, //NOI18N
             {BLANK_LINES_AFTER_OPEN_PHP_TAG_IN_HTML, "0"}, //NOI18N
             {BLANK_LINES_BEFORE_CLOSE_PHP_TAG, "0"}, //NOI18N
+            {BLANK_LINES_MAX_PRESERVED, "1"}, //NOI18N
 
             {SPACE_BEFORE_WHILE, TRUE},
             {SPACE_BEFORE_ELSE, TRUE},
             {SPACE_BEFORE_CATCH, TRUE},
             {SPACE_BEFORE_FINALLY, TRUE},
             {SPACE_BEFORE_ANONYMOUS_CLASS_PAREN, FALSE},
+            {SPACE_BEFORE_ANONYMOUS_FUNCTION_PAREN, TRUE},
             {SPACE_BEFORE_METHOD_DECL_PAREN, FALSE},
             {SPACE_BEFORE_METHOD_CALL_PAREN, FALSE},
             {SPACE_BEFORE_IF_PAREN, TRUE},

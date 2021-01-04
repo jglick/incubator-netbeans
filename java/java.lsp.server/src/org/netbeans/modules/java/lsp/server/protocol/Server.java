@@ -29,14 +29,21 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
+import java.util.function.Function;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import org.eclipse.lsp4j.CodeActionKind;
+import org.eclipse.lsp4j.CodeActionOptions;
 import org.eclipse.lsp4j.CompletionOptions;
 import org.eclipse.lsp4j.ExecuteCommandOptions;
 import org.eclipse.lsp4j.InitializeParams;
 import org.eclipse.lsp4j.InitializeResult;
+import org.eclipse.lsp4j.MessageActionItem;
+import org.eclipse.lsp4j.MessageParams;
 import org.eclipse.lsp4j.MessageType;
+import org.eclipse.lsp4j.PublishDiagnosticsParams;
 import org.eclipse.lsp4j.ServerCapabilities;
+import org.eclipse.lsp4j.ShowMessageRequestParams;
 import org.eclipse.lsp4j.TextDocumentSyncKind;
 import org.eclipse.lsp4j.WorkspaceFolder;
 import org.eclipse.lsp4j.jsonrpc.JsonRpcException;
@@ -58,9 +65,11 @@ import org.netbeans.api.project.Project;
 import org.netbeans.api.project.ProjectUtils;
 import org.netbeans.api.project.Sources;
 import org.netbeans.api.project.ui.OpenProjects;
+import org.netbeans.modules.java.lsp.server.Utils;
 import org.openide.filesystems.FileObject;
 import org.openide.util.Exceptions;
 import org.openide.util.Lookup;
+import org.openide.util.RequestProcessor;
 import org.openide.util.lookup.AbstractLookup;
 import org.openide.util.lookup.InstanceContent;
 import org.openide.util.lookup.Lookups;
@@ -71,13 +80,28 @@ import org.openide.util.lookup.ProxyLookup;
  * @author lahvac
  */
 public final class Server {
+    private static final Logger LOG = Logger.getLogger(Server.class.getName());
+    
     private Server() {
+    }
+    
+    public static NbCodeLanguageClient getStubClient() {
+        return STUB_CLIENT;
+    }
+    
+    public static boolean isClientResponseThread(NbCodeLanguageClient client) {
+        return client != null ? 
+                DISPATCHERS.get() == client :
+                DISPATCHERS.get() != null;
     }
     
     public static void launchServer(InputStream in, OutputStream out) {
         LanguageServerImpl server = new LanguageServerImpl();
-        Launcher<NbCodeLanguageClient> serverLauncher = createLauncher(server, in, out);
-        ((LanguageClientAware) server).connect(serverLauncher.getRemoteProxy());
+        ConsumeWithLookup msgProcessor = new ConsumeWithLookup(server.getSessionLookup());
+        Launcher<NbCodeLanguageClient> serverLauncher = createLauncher(server, in, out, msgProcessor::attachLookup);
+        NbCodeLanguageClient remote = serverLauncher.getRemoteProxy();
+        ((LanguageClientAware) server).connect(remote);
+        msgProcessor.attachClient(server.client);
         Future<Void> runningServer = serverLauncher.startListening();
         try {
             runningServer.get();
@@ -86,15 +110,18 @@ public final class Server {
         }
     }
     
-    private static Launcher<NbCodeLanguageClient> createLauncher(LanguageServerImpl server, InputStream in, OutputStream out) {
+    private static Launcher<NbCodeLanguageClient> createLauncher(LanguageServerImpl server, InputStream in, OutputStream out,
+            Function<MessageConsumer, MessageConsumer> processor) {
         return new LSPLauncher.Builder<NbCodeLanguageClient>()
             .setLocalService(server)
             .setRemoteInterface(NbCodeLanguageClient.class)
             .setInput(in)
             .setOutput(out)
-            .wrapMessages(new ConsumeWithLookup(server.getSessionLookup())::attachLookup)
+            .wrapMessages(processor)
             .create();
     }
+    
+    static final ThreadLocal<NbCodeLanguageClient>   DISPATCHERS = new ThreadLocal<>();
     
     /**
      * Processes message while the default Lookup is set to 
@@ -102,22 +129,36 @@ public final class Server {
      */
     private static class ConsumeWithLookup {
         private final Lookup sessionLookup;
-
+        private NbCodeLanguageClient client;
+        
         public ConsumeWithLookup(Lookup sessionLookup) {
             this.sessionLookup = sessionLookup;
+        }
+        
+        synchronized void attachClient(NbCodeLanguageClient client) {
+            this.client = client;
         }
         
         public MessageConsumer attachLookup(MessageConsumer delegate) {
             return new MessageConsumer() {
                 @Override
                 public void consume(Message msg) throws MessageIssueException, JsonRpcException {
-                    Lookups.executeWith(sessionLookup, () -> {
-                        delegate.consume(msg);
-                    });
+                    try {
+                        DISPATCHERS.set(client);
+                        Lookups.executeWith(sessionLookup, () -> {
+                            delegate.consume(msg);
+                        });
+                    } finally {
+                        DISPATCHERS.remove();
+                    }
                 }
             };
         }
     }
+    
+    // change to a greater throughput if the initialization waits on more processes than just (serialized) project open.
+    private static final RequestProcessor SERVER_INIT_RP = new RequestProcessor(LanguageServerImpl.class.getName());
+    
     
     private static class LanguageServerImpl implements LanguageServer, LanguageClientAware {
 
@@ -135,6 +176,96 @@ public final class Server {
             return sessionLookup;
         }
         
+        private void asyncOpenSelectedProjects(CompletableFuture f, List<FileObject> projectCandidates) {
+            List<Project> projects = new ArrayList<>();
+            try {
+                for (FileObject candidate : projectCandidates) {
+                    Project prj = FileOwnerQuery.getOwner(candidate);
+                    if (prj != null) {
+                        projects.add(prj);
+                    }
+                }
+                try {
+                    Project[] previouslyOpened = OpenProjects.getDefault().openProjects().get();
+                    if (previouslyOpened.length > 0) {
+                        Level level = Level.FINEST;
+                        assert (level = Level.CONFIG) != null;
+                        for (Project p : previouslyOpened) {
+                            LOG.log(level, "Previously opened project at {0}", p.getProjectDirectory());
+                        }
+                    }
+                } catch (InterruptedException | ExecutionException ex) {
+                    throw new IllegalStateException(ex);
+                }
+                OpenProjects.getDefault().open(projects.toArray(new Project[0]), false);
+                try {
+                    OpenProjects.getDefault().openProjects().get();
+                } catch (InterruptedException | ExecutionException ex) {
+                    throw new IllegalStateException(ex);
+                }
+                for (Project prj : projects) {
+                    //init source groups/FileOwnerQuery:
+                    ProjectUtils.getSources(prj).getSourceGroups(Sources.TYPE_GENERIC);
+                }
+                Project[] prjs = projects.toArray(new Project[projects.size()]);
+                f.complete(prjs);
+            } catch (RuntimeException ex) {
+                f.completeExceptionally(ex);
+            }
+        }
+        
+        private JavaSource showIndexingCompleted(Project[] opened) {
+            try {
+                final ClasspathInfo info = ClasspathInfo.create(ClassPath.EMPTY, ClassPath.EMPTY, ClassPath.EMPTY);
+                final JavaSource source = JavaSource.create(info);
+                if (source == null) {
+                    SERVER_INIT_RP.post(() -> {
+                        final String msg = NO_JAVA_SUPPORT + System.getProperty("java.version");
+                        showStatusBarMessage(MessageType.Error, msg, 5000);
+                    });
+                } else {
+                    source.runWhenScanFinished(cc -> {
+                        showStatusBarMessage(MessageType.Info, INDEXING_COMPLETED, 0);
+                    }, true);
+                }
+                return source;
+            } catch (IOException ex) {
+                throw new IllegalStateException(ex);
+            }
+        }
+
+        private void showStatusBarMessage(final MessageType type, final String msg, int timeout) {
+            if (client.getNbCodeCapabilities().hasStatusBarMessageSupport()) {
+                client.showStatusBarMessage(new ShowStatusMessageParams(type, msg, timeout));
+            } else {
+                client.showMessage(new ShowStatusMessageParams(type, msg, timeout));
+            }
+        }
+        
+        private InitializeResult constructInitResponse(JavaSource src) {
+            ServerCapabilities capabilities = new ServerCapabilities();
+            if (src != null) {
+                capabilities.setTextDocumentSync(TextDocumentSyncKind.Incremental);
+                CompletionOptions completionOptions = new CompletionOptions();
+                completionOptions.setResolveProvider(true);
+                completionOptions.setTriggerCharacters(Collections.singletonList("."));
+                capabilities.setCompletionProvider(completionOptions);
+                capabilities.setHoverProvider(true);
+                capabilities.setCodeActionProvider(new CodeActionOptions(Arrays.asList(CodeActionKind.QuickFix, CodeActionKind.Source)));
+                capabilities.setDocumentSymbolProvider(true);
+                capabilities.setDefinitionProvider(true);
+                capabilities.setDocumentHighlightProvider(true);
+                capabilities.setReferencesProvider(true);
+                List<String> commands = new ArrayList<>(Arrays.asList(JAVA_BUILD_WORKSPACE, GRAALVM_PAUSE_SCRIPT));
+                for (CodeGenerator codeGenerator : Lookup.getDefault().lookupAll(CodeGenerator.class)) {
+                    commands.addAll(codeGenerator.getCommands());
+                }
+                capabilities.setExecuteCommandProvider(new ExecuteCommandOptions(commands));
+                capabilities.setWorkspaceSymbolProvider(true);
+            }
+            return new InitializeResult(capabilities);
+        }
+        
         @Override
         public CompletableFuture<InitializeResult> initialize(InitializeParams init) {
             NbCodeClientCapabilities capa = NbCodeClientCapabilities.get(init);
@@ -144,7 +275,7 @@ public final class Server {
             if (folders != null) {
                 for (WorkspaceFolder w : folders) {
                     try {
-                        projectCandidates.add(TextDocumentServiceImpl.fromUri(w.getUri()));
+                        projectCandidates.add(Utils.fromUri(w.getUri()));
                     } catch (MalformedURLException ex) {
                         LOG.log(Level.FINE, null, ex);
                     }
@@ -154,7 +285,7 @@ public final class Server {
 
                 if (root != null) {
                     try {
-                        projectCandidates.add(TextDocumentServiceImpl.fromUri(root));
+                        projectCandidates.add(Utils.fromUri(root));
                     } catch (MalformedURLException ex) {
                         LOG.log(Level.FINE, null, ex);
                     }
@@ -162,61 +293,12 @@ public final class Server {
                     //TODO: use getRootPath()?
                 }
             }
-            List<Project> projects = new ArrayList<>();
-            for (FileObject candidate : projectCandidates) {
-                Project prj = FileOwnerQuery.getOwner(candidate);
-                if (prj != null) {
-                    projects.add(prj);
-                }
-            }
-            try {
-                Project[] previouslyOpened = OpenProjects.getDefault().openProjects().get();
-                if (previouslyOpened.length > 0) {
-                    Level level = Level.FINEST;
-                    assert (level = Level.CONFIG) != null;
-                    for (Project p : previouslyOpened) {
-                        LOG.log(level, "Previously opened project at {0}", p.getProjectDirectory());
-                    }
-                }
-            } catch (InterruptedException | ExecutionException ex) {
-                throw new IllegalStateException(ex);
-            }
-            OpenProjects.getDefault().open(projects.toArray(new Project[0]), false);
-            try {
-                OpenProjects.getDefault().openProjects().get();
-            } catch (InterruptedException | ExecutionException ex) {
-                throw new IllegalStateException(ex);
-            }
-            for (Project prj : projects) {
-                //init source groups/FileOwnerQuery:
-                ProjectUtils.getSources(prj).getSourceGroups(Sources.TYPE_GENERIC);
-            }
-            try {
-                JavaSource.create(ClasspathInfo.create(ClassPath.EMPTY, ClassPath.EMPTY, ClassPath.EMPTY))
-                          .runWhenScanFinished(cc -> {
-                  if (client.getNbCodeCapabilities().hasStatusBarMessageSupport()) {
-                        client.showStatusBarMessage(new ShowStatusMessageParams(MessageType.Info, INDEXING_COMPLETED, 0));
-                  } else {
-                        client.showMessage(new ShowStatusMessageParams(MessageType.Info, INDEXING_COMPLETED, 0));
-                  }
-                  //todo: refresh diagnostics all open editor?
-                }, true);
-            } catch (IOException ex) {
-                throw new IllegalStateException(ex);
-            }
-            ServerCapabilities capabilities = new ServerCapabilities();
-            capabilities.setTextDocumentSync(TextDocumentSyncKind.Incremental);
-            CompletionOptions completionOptions = new CompletionOptions();
-            completionOptions.setResolveProvider(true);
-            completionOptions.setTriggerCharacters(Collections.singletonList("."));
-            capabilities.setCompletionProvider(completionOptions);
-            capabilities.setCodeActionProvider(true);
-            capabilities.setDocumentSymbolProvider(true);
-            capabilities.setDefinitionProvider(true);
-            capabilities.setDocumentHighlightProvider(true);
-            capabilities.setReferencesProvider(true);
-            capabilities.setExecuteCommandProvider(new ExecuteCommandOptions(Arrays.asList(JAVA_BUILD_WORKSPACE, GRAALVM_PAUSE_SCRIPT)));
-            return CompletableFuture.completedFuture(new InitializeResult(capabilities));
+            CompletableFuture<Project[]> fProjects = new CompletableFuture<>();
+            SERVER_INIT_RP.post(() -> asyncOpenSelectedProjects(fProjects, projectCandidates));
+            
+            return fProjects.
+                    thenApply(this::showIndexingCompleted).
+                    thenApply(this::constructInitResponse);
         }
 
         @Override
@@ -241,7 +323,7 @@ public final class Server {
         @Override
         public void connect(LanguageClient aClient) {
             this.client = new NbCodeClientWrapper((NbCodeLanguageClient)aClient);
-            
+            sessionServices.add(client);
             sessionServices.add(new WorkspaceIOContext() {
                 @Override
                 protected LanguageClient client() {
@@ -254,8 +336,69 @@ public final class Server {
             ((LanguageClientAware) getWorkspaceService()).connect(aClient);
         }
     }
-
+    
     public static final String JAVA_BUILD_WORKSPACE =  "java.build.workspace";
     public static final String GRAALVM_PAUSE_SCRIPT =  "graalvm.pause.script";
     static final String INDEXING_COMPLETED = "Indexing completed.";
+    static final String NO_JAVA_SUPPORT = "Cannot initialize Java support on JDK ";
+
+    static final NbCodeLanguageClient STUB_CLIENT = new NbCodeLanguageClient() {
+        private final NbCodeClientCapabilities caps = new NbCodeClientCapabilities();
+        
+        private void logWarning(Object... args) {
+            LOG.log(Level.WARNING, "LSP Client called without proper context with param(s): {0}", 
+                    Arrays.asList(args));
+        }
+        
+        @Override
+        public void showStatusBarMessage(ShowStatusMessageParams params) {
+            logWarning(params);
+        }
+
+        @Override
+        public CompletableFuture<List<QuickPickItem>> showQuickPick(ShowQuickPickParams params) {
+            logWarning(params);
+            return CompletableFuture.completedFuture(params.getCanPickMany() || params.getItems().isEmpty() ? params.getItems() : Collections.singletonList(params.getItems().get(0)));
+        }
+
+        @Override
+        public CompletableFuture<String> showInputBox(ShowInputBoxParams params) {
+            logWarning(params);
+            return CompletableFuture.completedFuture(params.getValue());
+        }
+
+        @Override
+        public NbCodeClientCapabilities getNbCodeCapabilities() {
+            logWarning();
+            return caps;
+        }
+
+        @Override
+        public void telemetryEvent(Object object) {
+            logWarning(object);
+        }
+
+        @Override
+        public void publishDiagnostics(PublishDiagnosticsParams diagnostics) {
+            logWarning(diagnostics);
+        }
+
+        @Override
+        public void showMessage(MessageParams messageParams) {
+            logWarning(messageParams);
+        }
+
+        @Override
+        public CompletableFuture<MessageActionItem> showMessageRequest(ShowMessageRequestParams requestParams) {
+            logWarning(requestParams);
+            CompletableFuture<MessageActionItem> x = new CompletableFuture<>();
+            x.complete(null);
+            return x;
+        }
+
+        @Override
+        public void logMessage(MessageParams message) {
+            logWarning(message);
+        }
+    };
 }

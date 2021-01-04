@@ -236,6 +236,10 @@ public final class CodeStyle {
         return preferences.getInt(BLANK_LINES_BEFORE_CLOSE_PHP_TAG, getDefaultAsInt(BLANK_LINES_BEFORE_CLOSE_PHP_TAG));
     }
 
+    public int getBlankLinesMaxPreserved() {
+        return preferences.getInt(BLANK_LINES_MAX_PRESERVED, getDefaultAsInt(BLANK_LINES_MAX_PRESERVED));
+    }
+
     // Spaces ------------------------------------------------------------------
 
     public boolean spaceBeforeWhile() {
@@ -256,6 +260,10 @@ public final class CodeStyle {
 
     public boolean spaceBeforeAnonymousClassParen() {
         return preferences.getBoolean(SPACE_BEFORE_ANONYMOUS_CLASS_PAREN, getDefaultAsBoolean(SPACE_BEFORE_ANONYMOUS_CLASS_PAREN));
+    }
+
+    public boolean spaceBeforeAnonymousFunctionParen() {
+        return preferences.getBoolean(SPACE_BEFORE_ANONYMOUS_FUNCTION_PAREN, getDefaultAsBoolean(SPACE_BEFORE_ANONYMOUS_FUNCTION_PAREN));
     }
 
     public boolean spaceBeforeMethodDeclParen() {

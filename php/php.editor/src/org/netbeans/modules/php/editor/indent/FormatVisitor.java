@@ -1261,6 +1261,17 @@ public class FormatVisitor extends DefaultVisitor {
     }
 
     @Override
+    public void visit(FormalParameter node) {
+        Expression parameterType = node.getParameterType();
+        scan(parameterType);
+        if (parameterType != null) {
+            formatTokens.add(new FormatToken(FormatToken.Kind.WHITESPACE_AFTER_TYPE, parameterType.getEndOffset()));
+        }
+        scan(node.getParameterName());
+        scan(node.getDefaultValue());
+    }
+
+    @Override
     public void visit(FunctionInvocation node) {
         if (path.size() > 1 && path.get(1) instanceof MethodInvocation) {
             while (ts.moveNext() && ts.token().id() != PHPTokenId.PHP_OBJECT_OPERATOR
@@ -1575,6 +1586,7 @@ public class FormatVisitor extends DefaultVisitor {
 
         boolean addIndent = !isAnonymousClass(node.getExpression())
                 && !(path.size() > 2 && path.get(2) instanceof LambdaFunctionDeclaration) // #259111
+                && !(node.getExpression() instanceof LambdaFunctionDeclaration) // NETBEANS-4970
                 && !(node.getExpression() instanceof MatchExpression);
 
         if (ts.token().id() == PHPTokenId.PHP_RETURN) {
@@ -1591,6 +1603,10 @@ public class FormatVisitor extends DefaultVisitor {
 
     @Override
     public void visit(SingleFieldDeclaration node) {
+        Expression fieldType = node.getFieldType();
+        if (fieldType != null) {
+            formatTokens.add(new FormatToken(FormatToken.Kind.WHITESPACE_AFTER_TYPE, fieldType.getEndOffset()));
+        }
         Variable name = node.getName();
         scan(name);
         if (node.getValue() != null) {
@@ -2064,6 +2080,7 @@ public class FormatVisitor extends DefaultVisitor {
                         tokens.add(new FormatToken(FormatToken.Kind.TEXT, ts.offset(), ts.token().text().toString()));
                         tokens.add(new FormatToken(FormatToken.Kind.WHITESPACE_WITHIN_METHOD_DECL_PARENS, ts.offset() + ts.token().length()));
                     } else if (parent instanceof LambdaFunctionDeclaration) {
+                        tokens.add(new FormatToken(FormatToken.Kind.WHITESPACE_BEFORE_ANONYMOUS_FUNCTION_PAREN, ts.offset()));
                         tokens.add(new FormatToken(FormatToken.Kind.TEXT, ts.offset(), ts.token().text().toString()));
                         tokens.add(new FormatToken(FormatToken.Kind.WHITESPACE_WITHIN_METHOD_DECL_PARENS, ts.offset() + ts.token().length()));
                     } else if (parent instanceof FunctionInvocation || parent instanceof MethodInvocation || parent instanceof ClassInstanceCreation) {
@@ -2276,7 +2293,7 @@ public class FormatVisitor extends DefaultVisitor {
                 break;
             case T_INLINE_HTML:
                 FormatToken.InitToken token = (FormatToken.InitToken) formatTokens.get(0);
-                if (!token.hasHTML() && !isWhitespace(ts.token().text())) {
+                if (!token.hasHTML() && !isWhitespace(ts.token().text()) && !isShebang(ts.token().text())) {
                     token.setHasHTML(true);
                 }
                 int tokenStartOffset = ts.offset();
@@ -2700,6 +2717,10 @@ public class FormatVisitor extends DefaultVisitor {
             index++;
         }
         return index == text.length();
+    }
+
+    private boolean isShebang(final CharSequence text) {
+        return TokenUtilities.startsWith(text, "#!"); //NOI18N
     }
 
     private static boolean isAnonymousClass(ASTNode astNode) {
