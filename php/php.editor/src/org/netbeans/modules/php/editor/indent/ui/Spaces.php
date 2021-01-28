@@ -6,7 +6,7 @@ namespace ExampleNamespace;
 use Some\Classes\{ClassA, ClassB, ClassC as C};
 
 class Example implements Iface1, Iface2, Iface3 {
-
+#[A1("param")]
 private ClassA|ClassB|null $unionType;
 
     public function ifExample ($a, $b) {
@@ -114,6 +114,9 @@ $anonymousFunc = function ($arg) use ($param):int {
 (new Example())->alignParamsExample('one',
         'two', 'three',
         'four', 'five');
+
+function namedArguments($a, $b) {}
+namedArguments(a:1, b:2);
 
 $shortName=10;
 $veryLooongName=20;

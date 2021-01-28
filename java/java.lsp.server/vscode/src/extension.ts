@@ -29,7 +29,7 @@ import {
     Message,
     MessageType,
     LogMessageNotification,
-    HandlerResult
+    RevealOutputChannelOn
 } from 'vscode-languageclient';
 
 import * as net from 'net';
@@ -156,6 +156,14 @@ export function activate(context: ExtensionContext): VSNetBeansAPI {
 
     // find acceptable JDK and launch the Java part
     findJDK((specifiedJDK) => {
+        let currentClusters = findClusters(context.extensionPath).sort();
+        context.subscriptions.push(vscode.extensions.onDidChange(() => {
+            const newClusters = findClusters(context.extensionPath).sort();
+            if (newClusters.length !== currentClusters.length || newClusters.find((value, index) => value !== currentClusters[index])) {
+                currentClusters = newClusters;
+                activateWithJDK(specifiedJDK, context, log, true);
+            }
+        }));
         activateWithJDK(specifiedJDK, context, log, true);
     });
 
@@ -193,6 +201,30 @@ export function activate(context: ExtensionContext): VSNetBeansAPI {
                 }
             });
         });
+    }));
+    context.subscriptions.push(commands.registerCommand('java.rename.element.at', async (offset) => {
+        const editor = window.activeTextEditor;
+        if (editor) {
+            await commands.executeCommand('editor.action.rename', [
+                editor.document.uri,
+                editor.document.positionAt(offset),
+            ]);
+        }
+    }));
+    context.subscriptions.push(commands.registerCommand('java.debug.codelens', async (uri, methodName) => {
+        const editor = window.activeTextEditor;
+        if (editor) {
+            const docUri = editor.document.uri;
+            const workspaceFolder = vscode.workspace.getWorkspaceFolder(docUri);
+            const debugConfig = {
+                type: "java8+",
+                name: "CodeLens Debug",
+                request: "launch",
+                mainClass: uri,
+                singleMethod: methodName,
+            };
+            await vscode.debug.startDebugging(workspaceFolder, debugConfig).then();
+        }
     }));
     return Object.freeze({
         version : API_VERSION
@@ -386,7 +418,8 @@ function doActivateWithJDK(specifiedJDK: string | null, context: ExtensionContex
                 ]
             },
             outputChannel: log,
-            revealOutputChannelOn: 3, // error
+            revealOutputChannelOn: RevealOutputChannelOn.Never,
+            progressOnInitialization: true,
             initializationOptions : {
                 'nbcodeCapabilities' : {
                     'statusBarMessageSupport' : true
@@ -406,6 +439,7 @@ function doActivateWithJDK(specifiedJDK: string | null, context: ExtensionContex
             }
         }
 
+        
         let c = new LanguageClient(
                 'java',
                 'NetBeans Java',
