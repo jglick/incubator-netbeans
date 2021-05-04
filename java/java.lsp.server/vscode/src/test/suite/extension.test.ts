@@ -42,8 +42,28 @@ suite('Extension Test Suite', () => {
         let clusters = myExtension.findClusters('non-existent').
             // ignore 'extra' cluster in the extension path, since nbjavac is there during development:
             filter(s => !s.startsWith(extraCluster));
-        assert.strictEqual(clusters.length, 6, 'six required clusters found: ' + clusters);
-        for (let c of clusters) {
+
+
+        let found : string[] = [];
+        function assertCluster(name : string) {
+            for (let c of clusters) {
+                if (c.endsWith('/' + name)) {
+                    found.push(c);
+                    return;
+                }
+            }
+            assert.fail(`Cannot find ${name} among ${clusters}`);
+        }
+
+        assertCluster('extide');
+        assertCluster('ide');
+        assertCluster('java');
+        assertCluster('nbcode');
+        assertCluster('platform');
+        assertCluster('webcommon');
+        assertCluster('harness');
+
+        for (let c of found) {
             assert.ok(c.startsWith(nbcode.extensionPath), `All extensions are below ${nbcode.extensionPath}, but: ${c}`);
         }
     });
@@ -174,8 +194,9 @@ class Main {
                         then(() => waitUserApplication(5, false, () => resolve(true)));
                 }
                 console.log("Test: invoking debug debug.run");
-                vscode.commands.executeCommand("workbench.action.debug.run").then(
-                    () => waitUserApplication(5, true, onProcessStarted));
+                const workspaceFolder = (vscode.workspace.workspaceFolders!)[0];
+                vscode.debug.startDebugging(workspaceFolder, {type: "java8+", name: "Launch Java 8+ App", request: "launch"}, {}).
+                    then(() => waitUserApplication(5, true, onProcessStarted));
             });
             return r;
         } catch (error) {

@@ -35,9 +35,11 @@ import java.net.URISyntaxException;
 import java.text.MessageFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.WeakHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.graalvm.polyglot.Engine;
@@ -71,6 +73,13 @@ public class JPDATruffleAccessor extends Object {
     /** A field to test for whether the access loop is sleeping and can be interrupted. */
     static boolean accessLoopSleeping = false;
     private static boolean stepIntoPrepared;
+    /** A cache of thread-local variables which prevents them from GC. */
+    private static final ThreadLocal<Set<Object>> threadVariablesCache = new ThreadLocal<Set<Object>>() {
+        @Override
+        protected Set<Object> initialValue() {
+            return new HashSet<>();
+        }
+    };
 
     /** A step command:
      * 0 no step (continue)
@@ -160,6 +169,10 @@ public class JPDATruffleAccessor extends Object {
                                Throwable[] breakpointConditionExceptions,
                                int stepCmd) {
         // Called when the execution is halted. Have a breakpoint here.
+        Set<Object> initialVars = threadVariablesCache.get();
+        assert initialVars != null;
+        // Clear again after execution is resumed.
+        threadVariablesCache.remove();
         return stepCmd;
     }
     
@@ -278,7 +291,10 @@ public class JPDATruffleAccessor extends Object {
             thiss = Arrays.copyOf(thiss, j);
         }
         boolean areSkippedInternalFrames = j < n;
-        return new Object[] { frameInfos.toString(), codes, thiss, areSkippedInternalFrames };
+        Object[] info = new Object[] { frameInfos.toString(), codes, thiss, areSkippedInternalFrames };
+        Set<Object> varCache = threadVariablesCache.get();
+        varCache.add(info);
+        return info;
     }
     
     private static String createPositionIdentificationString(SourcePosition position) {
@@ -326,133 +342,56 @@ public class JPDATruffleAccessor extends Object {
     }
     
     // An array of scopes and their variables:
-    // <scope name>, <is functional>, <num args>, <num vars>, [(num args)+(num vars) variables]
-    // Variable: 11 elements: <name>, <type>, <readable>, <writable>, <internal>, <String value>,
-    //                        <var source>, <VS code>, <type source>, <TS code>, <DebugValue>
-    // Parent scopes: <scope name>, <is functional>, <has args>, <has vars>, <DebugScope>
+    // <scope name>, <has receiver>, <num vars (including receiver, if any)>, [receiver + variables]
+    // See addValueElement() for the variable format
     static Object[] getVariables(DebugStackFrame sf) {
         List<Object> elements = new ArrayList<>();
         try {
-            DebugScope scope = sf.getScope();
-            while (scope != null) {
-                Iterable<DebugValue> argsIt = scope.getArguments();
-                Iterator<DebugValue> args;
-                if (argsIt != null) {
-                    args = argsIt.iterator();
-                } else {
-                    args = null;
+            DebugScope receiverScope  = null;
+            for (DebugScope scope = sf.getScope(); scope != null; scope = scope.getParent()) {
+                DebugValue receiver = scope.getReceiver();
+                boolean hasReceiver = receiver != null;
+                List<DebugValue> variables = new ArrayList<>();
+                if (hasReceiver) {
+                    variables.add(receiver);
+                    if (receiverScope == null) {
+                        receiverScope = scope;
+                    }
                 }
                 Iterable<DebugValue> varsIt = scope.getDeclaredValues();
                 Iterator<DebugValue> vars = varsIt.iterator();
-                DebugValue receiver = scope.isFunctionScope() ? scope.getReceiver() : null;
-                if ((args == null || !args.hasNext()) && !vars.hasNext() && receiver == null) {
-                    // An empty scope, skip it
-                    scope = scope.getParent();
+                if (!vars.hasNext()) {
                     continue;
                 }
-                elements.add(scope.getName());
-                elements.add(scope.isFunctionScope());
-                List<DebugValue> arguments = null;
-                if (args != null && args.hasNext()) {
-                    arguments = new ArrayList<>();
-                    while (args.hasNext()) {
-                        arguments.add(args.next());
-                    }
-                    elements.add(arguments.size());
-                } else {
-                    elements.add(0);
-                }
-                List<DebugValue> variables = new ArrayList<>();
                 while (vars.hasNext()) {
                     variables.add(vars.next());
                 }
-                if (receiver != null) {
-                    variables.add(receiver);
+                if (variables.isEmpty()) {
+                    continue;
                 }
+                elements.add(scope.getName());
+                elements.add(hasReceiver);
                 elements.add(variables.size());
-                if (arguments != null) {
-                    for (DebugValue v : arguments) {
-                        addValueElement(v, elements);
-                    }
-                }
                 for (DebugValue v : variables) {
                     addValueElement(v, elements);
                 }
-                // We've filled the first scope in.
-                break;
             }
-            
-            if (scope != null) {
-                while ((scope = scope.getParent()) != null) {
-                    elements.add(scope.getName());
-                    elements.add(scope.isFunctionScope());
-                    Iterable<DebugValue> args = scope.getArguments();
-                    boolean hasArgs = (args != null && args.iterator().hasNext());
-                    elements.add(hasArgs);
-                    boolean hasVars = scope.getDeclaredValues().iterator().hasNext();
-                    elements.add(hasVars);
-                    elements.add(scope);
-                }
+            if (elements.isEmpty() && receiverScope != null) {
+                // No variables, provide the receiver, at least:
+                elements.add(receiverScope.getName());
+                elements.add(true);
+                elements.add(1);
+                addValueElement(receiverScope.getReceiver(), elements);
             }
         } catch (ThreadDeath td) {
             throw td;
         } catch (Throwable t) {
             LangErrors.exception("An error when accessing scopes", t);
         }
-        return elements.toArray();
-    }
-
-    // An array of scope's arguments and variables:
-    // <num args>, <num vars>, [(num args)+(num vars) variables]
-    // Variable: 11 elements: <name>, <type>, <readable>, <writable>, <internal>, <String value>,
-    //                        <var source>, <VS code>, <type source>, <TS code>, <DebugValue>
-    static Object[] getScopeVariables(DebugScope scope) {
-        List<Object> elements = new ArrayList<>();
-        try {
-            Iterable<DebugValue> argsIt = scope.getArguments();
-            Iterator<DebugValue> args;
-            if (argsIt != null) {
-                args = argsIt.iterator();
-            } else {
-                args = null;
-            }
-            Iterable<DebugValue> varsIt = scope.getDeclaredValues();
-            Iterator<DebugValue> vars = varsIt.iterator();
-            List<DebugValue> arguments = null;
-            if (args != null && args.hasNext()) {
-                arguments = new ArrayList<>();
-                while (args.hasNext()) {
-                    arguments.add(args.next());
-                }
-                elements.add(arguments.size());
-            } else {
-                elements.add(0);
-            }
-            List<DebugValue> variables = new ArrayList<>();
-            while (vars.hasNext()) {
-                variables.add(vars.next());
-            }
-            if (scope.isFunctionScope()) {
-                DebugValue receiver = scope.getReceiver();
-                if (receiver != null) {
-                    variables.add(receiver);
-                }
-            }
-            elements.add(variables.size());
-            if (arguments != null) {
-                for (DebugValue v : arguments) {
-                    addValueElement(v, elements);
-                }
-            }
-            for (DebugValue v : variables) {
-                addValueElement(v, elements);
-            }
-        } catch (ThreadDeath td) {
-            throw td;
-        } catch (Throwable t) {
-            LangErrors.exception("An error when accessing scope "+scope, t);
-        }
-        return elements.toArray();
+        Object[] variables = elements.toArray();
+        Set<Object> varCache = threadVariablesCache.get();
+        varCache.add(variables);
+        return variables;
     }
 
     // Store 12 elements: <name>, <language>, <type>, <readable>, <writable>, <internal>, <String value>,
@@ -587,7 +526,9 @@ public class JPDATruffleAccessor extends Object {
     
     static Object evaluate(DebugStackFrame sf, String expression) {
         DebugValue value = sf.eval(expression);
-        return new GuestObject(value);
+        Object result = new GuestObject(value);
+        threadVariablesCache.get().add(result);
+        return result;
     }
     
     /** Get the suspended event on current thread, if any. */
